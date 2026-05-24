@@ -610,6 +610,21 @@ def _load_scan_progress(scan_path: Path) -> Optional[dict]:
         return None
 
 
+def _unlink_scan_file(path: Path) -> None:
+    """
+    Delete the scan file and, if present, its AppleDouble companion.
+
+    On filesystems that don't support xattrs natively (ExFAT, FAT32) macOS
+    stores xattr data in a hidden companion file named ._{original_name}.
+    Deleting only the scan file leaves that companion behind as an orphan.
+    This helper removes both in one call so a single `rm` from the user
+    is always enough to start from scratch on any filesystem.
+    """
+    path.unlink(missing_ok=True)
+    companion = path.parent / ("._" + path.name)
+    companion.unlink(missing_ok=True)
+
+
 # ─────────────────────────── scanning ──────────────────────────────────
 
 def find_region_end(
@@ -895,7 +910,7 @@ def create_fillers(
                 break   # one failure means clonefile/punchhole not supported here
 
         if clone_ok:
-            scan_path.unlink(missing_ok=True)
+            _unlink_scan_file(scan_path)
             print("\n  Scan file deleted (good blocks freed, bad blocks held by fillers).")
             return
 
@@ -931,6 +946,8 @@ def create_fillers(
         os.close(scan_fd)
 
     scan_path.rename(fallback)
+    # Clean up any AppleDouble companion left on ExFAT after the rename.
+    (scan_path.parent / ("._" + scan_path.name)).unlink(missing_ok=True)
     filler_label = str(fallback.name)
     for r in bad_regions:
         r.filler = filler_label
@@ -1258,7 +1275,7 @@ def main() -> None:
                 f"\n     {scan_file}  ({stale_gib:.1f} GiB)"
                 f"\n     Deleting it to reclaim space before the new scan."
             )
-            scan_file.unlink()
+            _unlink_scan_file(scan_file)
 
     # ── free space (fresh scan) ───────────────────────────────────────────────
     if not resume:
@@ -1385,13 +1402,13 @@ def main() -> None:
 
     # ── no bad blocks? ─────────────────────────────────────────────────────────
     if not bad_regions:
-        scan_file.unlink(missing_ok=True)
+        _unlink_scan_file(scan_file)
         print("  Drive appears healthy — no filler files needed.\n")
         return
 
     # ── explicit --no-fillers flag ──────────────────────────────────────────────
     if args.no_fillers:
-        scan_file.unlink(missing_ok=True)
+        _unlink_scan_file(scan_file)
         print("  --no-fillers set: scan file removed.  No fillers created.\n")
 
     # ── unsupported filesystem: ask user what to do with the scan file ───────────
@@ -1419,11 +1436,12 @@ def main() -> None:
             badblocks_dir.mkdir(parents=True, exist_ok=True)
             crude = badblocks_dir / "filler_crude.bin"
             scan_file.rename(crude)
+            (scan_file.parent / ("._" + scan_file.name)).unlink(missing_ok=True)
             for r in bad_regions:
                 r.filler = crude.name
             print(f"\n  Crude filler kept: {crude}\n")
         else:
-            scan_file.unlink(missing_ok=True)
+            _unlink_scan_file(scan_file)
             print("\n  Scan file deleted.  No fillers created.\n")
 
     # ── create filler files (APFS / HFS+) ──────────────────────────────────────
