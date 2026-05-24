@@ -1152,6 +1152,15 @@ def parse_args() -> argparse.Namespace:
         help="Scan and report only; do not create filler files.",
     )
     p.add_argument(
+        "--clean",
+        action="store_true",
+        help=(
+            "Remove all files left by this tool on the volume: the scan temp file, "
+            "the lock file, and the entire .badblocks/ directory (fillers + map.json). "
+            "Use this to fully restore the volume to its original state."
+        ),
+    )
+    p.add_argument(
         "--api-check",
         action="store_true",
         help="Run a self-check of macOS APIs on the volume and exit.",
@@ -1220,7 +1229,29 @@ def main() -> None:
     # Ensure the lock file is removed on clean exit (it is harmless if left)
     lock_path = volume / LOCK_FILE_NAME
 
-    # ── API check shortcut ───────────────────────────────────────────────
+    # ── --clean: remove all tool leftovers and exit ──────────────────────────────────
+    if args.clean:
+        removed = []
+        # Scan temp file (and its AppleDouble companion on ExFAT)
+        if scan_file.exists():
+            _unlink_scan_file(scan_file)
+            removed.append(str(scan_file))
+        # .badblocks/ directory (fillers + map.json)
+        if badblocks_dir.exists():
+            shutil.rmtree(badblocks_dir)
+            removed.append(str(badblocks_dir))
+        # Lock file
+        lock_path.unlink(missing_ok=True)
+        os.close(lock_fd)
+        if removed:
+            for r in removed:
+                print(f"  ✗  Removed  {r}")
+            print(f"\n✓  Volume {volume} cleaned.")
+        else:
+            print(f"✓  Nothing to clean on {volume}.")
+        return
+
+    # ── API check shortcut ─────────────────────────────────────────────────────
     if args.api_check:
         api_check(volume)
         os.close(lock_fd)
