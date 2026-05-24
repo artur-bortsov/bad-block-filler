@@ -316,8 +316,10 @@ WRITE_TIMEOUT   = 30.0
 
 PRINT_INTERVAL  = 1.0            # max seconds between progress-line updates
 
-BADBLOCKS_DIR   = ".badblocks"
-SCAN_TMP_NAME   = "._bbf_scan_temp"
+BADBLOCKS_DIR          = ".badblocks"
+SCAN_TMP_NAME          = "._bbf_scan_temp"
+PROGRESS_FILE_NAME     = "._bbf_progress"    # written after each bad region + every N blocks
+PROGRESS_SAVE_INTERVAL = 1024               # save every 1024 × write_block bytes (~1 GiB)
 
 # ─────────────────────────── data model ────────────────────────────────────
 
@@ -537,7 +539,38 @@ def timed_write(fd: int, offset: int, size: int) -> float:
 
     return time.monotonic() - t0
 
-# ─────────────────────────── scanning ──────────────────────────────────────
+# ─────────────────────────── scan progress ───────────────────────────────
+
+def _save_scan_progress(
+    path:        Path,
+    scan_size:   int,
+    next_offset: int,
+    bad_regions: List["BadRegion"],
+) -> None:
+    """
+    Atomically write intermediate scan state to PROGRESS_FILE_NAME so the scan
+    can be resumed after a crash or force-unmount without rescanning from zero.
+    Writes are best-effort: any error is silently ignored.
+    """
+    try:
+        data = {
+            "scan_size":   scan_size,
+            "next_offset": next_offset,
+            "bad_regions": [
+                {
+                    "start_bytes": r.start,
+                    "end_bytes":   r.end,
+                    "phys_start":  r.phys_start,
+                }
+                for r in bad_regions
+            ],
+        }
+        path.write_text(json.dumps(data) + "\n")
+    except OSError:
+        pass
+
+
+# ─────────────────────────── scanning ──────────────────────────────────
 
 def find_region_end(
     fd:          int,
@@ -592,11 +625,14 @@ def find_region_end(
 
 
 def scan(
-    fd:          int,
-    file_size:   int,
-    threshold:   float,
-    write_block: int = WRITE_BLOCK,
-    skip_size:   int = SKIP_SIZE,
+    fd:              int,
+    file_size:       int,
+    threshold:       float,
+    write_block:     int               = WRITE_BLOCK,
+    skip_size:       int               = SKIP_SIZE,
+    start_offset:    int               = 0,
+    initial_regions: Optional[List["BadRegion"]] = None,
+    progress_path:   Optional[Path]    = None,
 ) -> List[BadRegion]:
     """
     Forward scan writing `write_block` bytes at a time.
@@ -611,22 +647,34 @@ def scan(
 
     Progress is printed via carriage-return for normal blocks (overwritten
     each second) and with a newline for notable events.
+
+    start_offset / initial_regions / progress_path support mid-scan resumption:
+    the scan begins at start_offset and initialises bad_regions from
+    initial_regions.  After each bad region is found (and every
+    PROGRESS_SAVE_INTERVAL blocks) the current state is written to
+    progress_path so a subsequent run can resume without rescanning from zero.
     """
-    bad_regions: List[BadRegion] = []
+    bad_regions: List[BadRegion] = list(initial_regions) if initial_regions else []
     bad_start:   Optional[int]  = None
     last_print   = time.monotonic()
     blocks_done  = 0
     total_blocks = (file_size + write_block - 1) // write_block
 
-    print(
-        f"\n▶  Scan  ({file_size / GiB:.1f} GiB  |  "
-        f"{write_block // MiB} MiB blocks  |  "
-        f"{skip_size // GiB} GiB skip on slow)"
-    )
+    if start_offset > 0:
+        print(
+            f"\n▶  Resuming scan at {start_offset / GiB:.4f} GiB  "
+            f"({len(bad_regions)} bad region(s) already found)"
+        )
+    else:
+        print(
+            f"\n▶  Scan  ({file_size / GiB:.1f} GiB  |  "
+            f"{write_block // MiB} MiB blocks  |  "
+            f"{skip_size // GiB} GiB skip on slow)"
+        )
     speed_label = write_block / threshold / MiB
     print(f"   Slow threshold: {threshold:.3f} s  (<{speed_label:.0f} MiB/s per block)\n")
 
-    offset = 0
+    offset = start_offset
     while offset < file_size:
         block_end = min(offset + write_block, file_size)
         block_sz  = block_end - offset
@@ -681,6 +729,13 @@ def scan(
                 )
                 bad_start = None
                 last_print = now
+                # Save after each completed bad-region boundary search.
+                if progress_path:
+                    _save_scan_progress(progress_path, file_size, offset, bad_regions)
+
+            # Periodic progress save even when no bad regions are being found.
+            if progress_path and blocks_done % PROGRESS_SAVE_INTERVAL == 0:
+                _save_scan_progress(progress_path, file_size, offset, bad_regions)
 
             # Rolling progress line (overwritten every second)
             if now - last_print >= PRINT_INTERVAL:
@@ -1121,33 +1176,72 @@ def main() -> None:
     # ── load state from previous runs (resumption) ──────────────────────────
     existing_regions, next_filler_index = load_existing_state(badblocks_dir)
 
-    # ── clean up stale scan file BEFORE measuring free space ─────────────────
-    # The stale file may occupy physical blocks; deleting it first ensures that
-    # statvfs reflects the correct available space for the new target calculation.
+    # ── stale scan file: resume or discard ──────────────────────────────────────
+    # If a progress file exists alongside the scan file and the sizes match,
+    # the previous run was interrupted mid-scan and can be resumed in-place.
+    # Otherwise, delete the stale file so statvfs reports accurate free space.
+    progress_file   = volume / PROGRESS_FILE_NAME
+    resume          = False   # True  → reuse existing scan file, skip prealloc
+    resume_offset   = 0
+    resume_regions: List[BadRegion] = []
+    target          = 0       # will be set below
+
     if scan_file.exists():
-        stale_gib = scan_file.stat().st_size / GiB
-        print(
-            f"\n  ⚠  Found leftover scan file from a previous interrupted run:"
-            f"\n     {scan_file}  ({stale_gib:.1f} GiB)"
-            f"\n     Deleting it to reclaim space before the new scan."
-        )
-        scan_file.unlink()
+        stale_size = scan_file.stat().st_size
+        stale_gib  = stale_size / GiB
+        loaded_ok  = False
 
-    # ── free space ────────────────────────────────────────────────────────
-    st         = os.statvfs(volume)
-    free_bytes = st.f_bavail * st.f_frsize
-    # Align target size down to write_block boundary
-    target     = ((free_bytes - headroom) // write_block) * write_block
+        if progress_file.exists() and stale_size > 0:
+            try:
+                prog = json.loads(progress_file.read_text())
+                if (prog.get("scan_size", 0) == stale_size
+                        and prog.get("next_offset", 0) > 0):
+                    resume_offset = prog["next_offset"]
+                    for r in prog.get("bad_regions", []):
+                        resume_regions.append(BadRegion(
+                            start      = r["start_bytes"],
+                            end        = r["end_bytes"],
+                            phys_start = r.get("phys_start", -1),
+                        ))
+                    target    = stale_size
+                    resume    = True
+                    loaded_ok = True
+                    print(
+                        f"\n  ↻  Resuming interrupted scan:"
+                        f"\n     Scan file : {stale_gib:.1f} GiB"
+                        f"\n     Scanned   : {resume_offset / GiB:.2f} GiB so far"
+                        f"\n     Found     : {len(resume_regions)} bad region(s)"
+                    )
+            except Exception:
+                pass   # corrupt progress file — fall through to discard
 
-    if target <= 0:
-        print(
-            f"✗  Not enough free space on {volume}\n"
-            f"   Free: {free_bytes // MiB} MiB  Headroom: {headroom // MiB} MiB  "
-            f"Need at least {(headroom + write_block) // MiB} MiB"
-        )
-        sys.exit(1)
+        if not loaded_ok:
+            print(
+                f"\n  ⚠  Found leftover scan file from a previous interrupted run:"
+                f"\n     {scan_file}  ({stale_gib:.1f} GiB)"
+                f"\n     Deleting it to reclaim space before the new scan."
+            )
+            scan_file.unlink()
+            progress_file.unlink(missing_ok=True)
 
-    # ── filesystem type + filler capability ──────────────────────────────────
+    # ── free space (fresh scan) ───────────────────────────────────────────────
+    if not resume:
+        st         = os.statvfs(volume)
+        free_bytes = st.f_bavail * st.f_frsize
+        target     = ((free_bytes - headroom) // write_block) * write_block
+        if target <= 0:
+            print(
+                f"✗  Not enough free space on {volume}\n"
+                f"   Free: {free_bytes // MiB} MiB  Headroom: {headroom // MiB} MiB  "
+                f"Need at least {(headroom + write_block) // MiB} MiB"
+            )
+            sys.exit(1)
+    else:
+        # For the header we still want to show current free space.
+        st         = os.statvfs(volume)
+        free_bytes = st.f_bavail * st.f_frsize
+
+    # ── filesystem type + filler capability ────────────────────────────────────
     fs_type = detect_fs_type(volume)
     supports_clone, supports_punch, fs_desc = filler_capability(fs_type)
     fillers_possible = supports_clone or supports_punch
@@ -1173,7 +1267,7 @@ def main() -> None:
             f"overhead false positives.  Consider --slow-threshold 2.0."
         )
 
-    # ── prominent notice when fillers cannot be created ────────────────────────
+    # ── prominent notice when fillers cannot be created ────────────────────────────
     if not fillers_possible and not args.no_fillers:
         est_hours = target / (50 * MiB) / 3600   # rough estimate at 50 MiB/s
         print(
@@ -1197,49 +1291,58 @@ def main() -> None:
             sys.exit(0)
         print()
 
-    # ── create and pre-allocate the scan file ─────────────────────────────────
-    print(f"\n▶  Pre-allocating {target / GiB:.1f} GiB scan file … ", end="", flush=True)
+    # ── open / create the scan file ────────────────────────────────────────────
+    if resume:
+        print(f"\n▶  Reopening existing scan file ({target / GiB:.1f} GiB) for resumption … ", end="", flush=True)
+        try:
+            fd = os.open(str(scan_file), os.O_RDWR)
+        except OSError as e:
+            print(f"✗\n  Cannot reopen scan file: {e}")
+            sys.exit(1)
+        print("✓")
+    else:
+        print(f"\n▶  Pre-allocating {target / GiB:.1f} GiB scan file … ", end="", flush=True)
+        try:
+            fd = os.open(str(scan_file), os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+        except OSError as e:
+            print(f"✗\n  Cannot create scan file: {e}")
+            sys.exit(1)
+        try:
+            allocated = preallocate(fd, target)
+            if allocated >= target:
+                alloc_label = f"{allocated / GiB:.1f} GiB reserved"
+            else:
+                lazy_gib    = (target - allocated) / GiB
+                alloc_label = (
+                    f"{allocated / GiB:.1f} of {target / GiB:.1f} GiB pre-allocated; "
+                    f"{lazy_gib:.1f} GiB lazy"
+                )
+        except OSError:
+            alloc_label = f"{target / GiB:.1f} GiB, lazy allocation"
+        os.ftruncate(fd, target)
+        print(f"✓  ({alloc_label})")
 
-    try:
-        fd = os.open(str(scan_file), os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
-    except OSError as e:
-        print(f"✗\n  Cannot create scan file: {e}")
-        sys.exit(1)
-
-    # Ctrl-C handler: leave scan file in place (holds physical blocks, resume later)
+    # Ctrl-C handler: leave scan file and progress file in place for resumption.
     def _sigint(_sig, _frame):
         try:
             os.close(fd)
         except Exception:
             pass
-        print(f"\n\n  ⚠  Interrupted.  Scan file left at:\n     {scan_file}")
-        print(f"  Remove to free space:  sudo rm {scan_file}")
+        print(f"\n\n  ⚠  Interrupted.  Scan state saved — re-run the same command to resume.")
+        print(f"  To discard: sudo rm {scan_file} {progress_file}")
         sys.exit(130)
 
     signal.signal(signal.SIGINT, _sigint)
 
-    try:
-        allocated = preallocate(fd, target)
-        if allocated >= target:
-            alloc_label = f"{allocated / GiB:.1f} GiB reserved"
-        else:
-            lazy_gib    = (target - allocated) / GiB
-            alloc_label = (
-                f"{allocated / GiB:.1f} of {target / GiB:.1f} GiB pre-allocated; "
-                f"{lazy_gib:.1f} GiB lazy"
-            )
-    except OSError:
-        # F_PREALLOCATE always fails on APFS for large allocations — this is
-        # expected and harmless.  The scan file will be a sparse file; APFS
-        # assigns physical extents lazily as each block is written.
-        alloc_label = f"{target / GiB:.1f} GiB, lazy allocation"
-
-    os.ftruncate(fd, target)
-    print(f"✓  ({alloc_label})")
-
-    # ── scan ───────────────────────────────────────────────────────────────
-    bad_regions = scan(fd, target, args.slow_threshold, write_block, skip_size)
+    # ── scan ───────────────────────────────────────────────────────────────────
+    bad_regions = scan(
+        fd, target, args.slow_threshold, write_block, skip_size,
+        start_offset    = resume_offset,
+        initial_regions = resume_regions if resume else None,
+        progress_path   = progress_file,
+    )
     os.close(fd)
+    progress_file.unlink(missing_ok=True)   # scan completed — progress file no longer needed
 
     # ── display map ────────────────────────────────────────────────────────────
     show_map(target, bad_regions)
