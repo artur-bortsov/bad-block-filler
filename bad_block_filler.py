@@ -55,6 +55,7 @@ __version__ = "1.0.0"
 
 import argparse
 import ctypes
+import errno
 import fcntl as _py_fcntl   # Python's fcntl — correctly marshals struct buffers
 import json
 import os
@@ -307,6 +308,12 @@ HEADROOM        = 512 * MiB      # keep free to avoid cramping macOS
 WRITE_CHUNK     = 1 * MiB        # pwrite() chunk size (= WRITE_BLOCK here)
 _ZEROS          = bytearray(WRITE_CHUNK)   # reusable zero-filled buffer
 
+# Maximum seconds to wait for a single write+sync before treating the block as
+# dead.  On a failing drive F_FULLFSYNC can block indefinitely; SIGALRM fires
+# after this interval, interrupts the syscall with EINTR, and lets the scan
+# skip forward instead of hanging.  Updated from --write-timeout in main().
+WRITE_TIMEOUT   = 60.0
+
 PRINT_INTERVAL  = 1.0            # max seconds between progress-line updates
 
 BADBLOCKS_DIR   = ".badblocks"
@@ -429,7 +436,10 @@ def fullfsync(fd: int) -> None:
     """
     ret = _c_fcntl(fd, F_FULLFSYNC, 0)
     if ret < 0:
-        os.fsync(fd)   # fall back to regular fsync
+        # Do NOT fall back to os.fsync() when interrupted by SIGALRM (EINTR).
+        # The _WriteTimeoutError will propagate via the signal handler instead.
+        if ctypes.get_errno() != errno.EINTR:
+            os.fsync(fd)
 
 
 def clonefile(src: Path, dst: Path) -> None:
@@ -440,8 +450,13 @@ def clonefile(src: Path, dst: Path) -> None:
     """
     ret = _libc.clonefile(bytes(src), bytes(dst), ctypes.c_uint32(0))
     if ret < 0:
-        errno = ctypes.get_errno()
-        raise OSError(errno, os.strerror(errno), f"clonefile {src} → {dst}")
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err), f"clonefile {src} → {dst}")
+
+# ─────────────────────────── write timeout ─────────────────────────────────
+
+class _WriteTimeoutError(Exception):
+    """Raised by the SIGALRM handler when a write+sync exceeds WRITE_TIMEOUT."""
 
 # ─────────────────────────── timing write ──────────────────────────────────
 
@@ -452,17 +467,37 @@ def timed_write(fd: int, offset: int, size: int) -> float:
 
     The timer starts BEFORE the writes so that any slow write path
     (e.g. NAND erase cycles) is captured, not just the fsync wait.
+
+    If the operation does not complete within WRITE_TIMEOUT seconds the
+    SIGALRM handler raises _WriteTimeoutError, which interrupts the blocking
+    F_FULLFSYNC syscall (via EINTR) and lets the scan continue.  Note:
+    Python only skips the EINTR retry in os.write() when the signal handler
+    itself raises an exception (PEP 475), so _WriteTimeoutError must be raised
+    — not just set a flag.
     """
     t0 = time.monotonic()
 
-    written = 0
-    os.lseek(fd, offset, os.SEEK_SET)
-    while written < size:
-        chunk = min(len(_ZEROS), size - written)
-        n = os.write(fd, memoryview(_ZEROS)[:chunk])
-        written += n
+    if WRITE_TIMEOUT > 0:
+        def _on_alarm(signum, frame):
+            raise _WriteTimeoutError()
+        old_handler = signal.signal(signal.SIGALRM, _on_alarm)
+        signal.setitimer(signal.ITIMER_REAL, WRITE_TIMEOUT)
 
-    fullfsync(fd)
+    try:
+        written = 0
+        os.lseek(fd, offset, os.SEEK_SET)
+        while written < size:
+            chunk = min(len(_ZEROS), size - written)
+            n = os.write(fd, memoryview(_ZEROS)[:chunk])
+            written += n
+        fullfsync(fd)
+    except _WriteTimeoutError:
+        return WRITE_TIMEOUT   # caller sees maximally-slow block → skip forward
+    finally:
+        if WRITE_TIMEOUT > 0:
+            signal.setitimer(signal.ITIMER_REAL, 0)   # cancel alarm
+            signal.signal(signal.SIGALRM, old_handler)
+
     return time.monotonic() - t0
 
 # ─────────────────────────── scanning ──────────────────────────────────────
@@ -572,9 +607,13 @@ def scan(
             phys = get_phys_offset(fd, offset)
             phys_str = f"  phys {phys / GiB:.3f} GiB" if phys >= 0 else ""
             next_off = min(offset + skip_size, file_size)
+            slow_label = (
+                "TIMEOUT ⚠" if (WRITE_TIMEOUT > 0 and elapsed >= WRITE_TIMEOUT)
+                else "SLOW ⚠"
+            )
             print(
                 f"\r   [█] @{offset / GiB:.4f} GiB  "
-                f"{elapsed:.2f} s  {speed:5.0f} MiB/s  SLOW ⚠"
+                f"{elapsed:.2f} s  {speed:5.0f} MiB/s  {slow_label}"
                 f"  → skip to {next_off / GiB:.2f} GiB{phys_str}",
                 flush=True,
             )
@@ -945,6 +984,19 @@ def parse_args() -> argparse.Namespace:
         help="MiB to keep free on the volume so macOS stays healthy. Default: %(default)s.",
     )
     p.add_argument(
+        "--write-timeout",
+        type=float,
+        default=60.0,
+        metavar="SECS",
+        help=(
+            "Seconds before a write+sync with no drive response is abandoned and "
+            "treated as a dead block.  Prevents the tool from freezing indefinitely "
+            "on a completely unresponsive block (the process would otherwise enter "
+            "uninterruptible I/O wait and require a force-unmount to escape). "
+            "Default: %(default)s s.  Set to 0 to disable."
+        ),
+    )
+    p.add_argument(
         "--no-fillers",
         action="store_true",
         help="Scan and report only; do not create filler files.",
@@ -1003,9 +1055,10 @@ def main() -> None:
         block_mib_src = f"{auto_block_mib} MiB (auto: {drive_type})"
 
     # Rebuild _ZEROS if the write block changed from the module default
-    global _ZEROS
+    global _ZEROS, WRITE_TIMEOUT
     if len(_ZEROS) != write_block:
         _ZEROS = bytearray(write_block)
+    WRITE_TIMEOUT = args.write_timeout
 
     # ── acquire per-volume lock (prevents parallel runs) ─────────────────────
     # The lock fd must stay open until the process exits — closing it releases
