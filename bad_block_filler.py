@@ -342,30 +342,39 @@ class BadRegion:
 def preallocate(fd: int, size: int) -> int:
     """
     Reserve physical NAND blocks for the open file descriptor fd.
-    First attempts contiguous allocation; falls back to non-contiguous.
     Returns the number of bytes actually allocated.
+
+    Attempts in order:
+    1. Contiguous + all-or-nothing (F_ALLOCATECONTIG | F_ALLOCATEALL): ideal for HDD.
+       Almost always fails on APFS, which does not maintain large contiguous extents.
+    2. Non-contiguous, all-or-nothing (F_ALLOCATEALL): works on HFS+.
+       Fails on APFS when the requested size reaches the container's allocatable limit
+       (APFS reserves some of the space shown by statvfs for metadata / purgeable data).
+    3. Non-contiguous, best-effort (no flags): APFS-friendly; allocates as much as
+       possible and returns the actual bytes allocated in fst_bytesalloc.  May return
+       less than size on a nearly-full volume.
 
     Uses Python's fcntl.fcntl(fd, cmd, bytes) which correctly passes the
     struct as a mutable buffer and returns the kernel-modified bytes.
     """
     fs = Fstore()
-    fs.fst_flags   = F_ALLOCATECONTIG | F_ALLOCATEALL
-    fs.fst_posmode = F_PEOFPOSMODE
-    fs.fst_offset  = 0
-    fs.fst_length  = size
+    fs.fst_posmode    = F_PEOFPOSMODE
+    fs.fst_offset     = 0
+    fs.fst_length     = size
     fs.fst_bytesalloc = 0
 
     sz = ctypes.sizeof(Fstore)
-    try:
-        result = _py_fcntl.fcntl(fd, F_PREALLOCATE, bytes(fs))
-        fs2 = Fstore.from_buffer_copy(result[:sz])
-        return fs2.fst_bytesalloc
-    except OSError:
-        # Retry without the contiguous requirement (fragmented free space)
-        fs.fst_flags = F_ALLOCATEALL
-        result = _py_fcntl.fcntl(fd, F_PREALLOCATE, bytes(fs))
-        fs2 = Fstore.from_buffer_copy(result[:sz])
-        return fs2.fst_bytesalloc
+
+    for flags in (F_ALLOCATECONTIG | F_ALLOCATEALL, F_ALLOCATEALL, 0):
+        fs.fst_flags      = flags
+        fs.fst_bytesalloc = 0
+        try:
+            result = _py_fcntl.fcntl(fd, F_PREALLOCATE, bytes(fs))
+            fs2 = Fstore.from_buffer_copy(result[:sz])
+            return fs2.fst_bytesalloc
+        except OSError:
+            if flags == 0:
+                raise   # all three attempts failed; propagate to caller
 
 
 def punch_hole(fd: int, offset: int, length: int) -> None:
@@ -1117,12 +1126,14 @@ def main() -> None:
 
     try:
         allocated = preallocate(fd, target)
+        alloc_label = "reserved"
     except OSError as e:
         print(f"\n  ⚠  F_PREALLOCATE failed ({e}) — blocks will be allocated lazily on write.")
-        allocated = target
+        allocated   = target
+        alloc_label = "target, lazy allocation"
 
     os.ftruncate(fd, target)
-    print(f"✓  ({allocated / GiB:.1f} GiB reserved)")
+    print(f"✓  ({allocated / GiB:.1f} GiB {alloc_label})")
 
     # ── scan ───────────────────────────────────────────────────────────────
     bad_regions = scan(fd, target, args.slow_threshold, write_block, skip_size)
