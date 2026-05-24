@@ -1029,6 +1029,18 @@ def main() -> None:
     # ── load state from previous runs (resumption) ──────────────────────────
     existing_regions, next_filler_index = load_existing_state(badblocks_dir)
 
+    # ── clean up stale scan file BEFORE measuring free space ─────────────────
+    # The stale file may occupy physical blocks; deleting it first ensures that
+    # statvfs reflects the correct available space for the new target calculation.
+    if scan_file.exists():
+        stale_gib = scan_file.stat().st_size / GiB
+        print(
+            f"\n  ⚠  Found leftover scan file from a previous interrupted run:"
+            f"\n     {scan_file}  ({stale_gib:.1f} GiB)"
+            f"\n     Deleting it to reclaim space before the new scan."
+        )
+        scan_file.unlink()
+
     # ── free space ────────────────────────────────────────────────────────
     st         = os.statvfs(volume)
     free_bytes = st.f_bavail * st.f_frsize
@@ -1093,16 +1105,6 @@ def main() -> None:
             sys.exit(0)
         print()
 
-    # ── clean up stale scan file from a previously interrupted run ─────────────
-    if scan_file.exists():
-        stale_gib = scan_file.stat().st_size / GiB
-        print(
-            f"\n  ⚠  Found leftover scan file from a previous interrupted run:"
-            f"\n     {scan_file}  ({stale_gib:.1f} GiB)"
-            f"\n     Deleting it to reclaim space before the new scan."
-        )
-        scan_file.unlink()
-
     # ── create and pre-allocate the scan file ─────────────────────────────────
     print(f"\n▶  Pre-allocating {target / GiB:.1f} GiB scan file … ", end="", flush=True)
 
@@ -1126,14 +1128,20 @@ def main() -> None:
 
     try:
         allocated = preallocate(fd, target)
-        alloc_label = "reserved"
+        if allocated >= target:
+            alloc_label = f"{allocated / GiB:.1f} GiB reserved"
+        else:
+            lazy_gib    = (target - allocated) / GiB
+            alloc_label = (
+                f"{allocated / GiB:.1f} of {target / GiB:.1f} GiB pre-allocated; "
+                f"{lazy_gib:.1f} GiB lazy"
+            )
     except OSError as e:
         print(f"\n  ⚠  F_PREALLOCATE failed ({e}) — blocks will be allocated lazily on write.")
-        allocated   = target
-        alloc_label = "target, lazy allocation"
+        alloc_label = f"{target / GiB:.1f} GiB target, lazy allocation"
 
     os.ftruncate(fd, target)
-    print(f"✓  ({allocated / GiB:.1f} GiB {alloc_label})")
+    print(f"✓  ({alloc_label})")
 
     # ── scan ───────────────────────────────────────────────────────────────
     bad_regions = scan(fd, target, args.slow_threshold, write_block, skip_size)
