@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <!-- Background -->
+  <rect width="1280" height="640" fill="#0d1117"/>
+
+  <!-- Subtle grid texture -->
+  <rect width="1280" height="640" fill="none" stroke="#161b22" stroke-width="0"/>
+
+  <!-- Decorative accent lines (left and right edges) -->
+  <rect x="0" y="0" width="4" height="640" fill="#f97316" opacity="0.6"/>
+  <rect x="1276" y="0" width="4" height="640" fill="#f97316" opacity="0.6"/>
+
+  <!-- ─── Category badge (y=105, h=40, centred) ─── -->
+  <!-- pill: w=220, cx=640 → x=530 -->
+  <rect x="530" y="85" width="220" height="40" rx="20" fill="#f97316"/>
+  <text x="640" y="111" font-family="Arial, Apple Symbols, sans-serif" font-size="15" font-weight="700" fill="#fff" text-anchor="middle" letter-spacing="0.8">macOS  ·  Drive Repair</text>
+
+  <!-- ─── Title line 1 (y=244) ─── -->
+  <text x="640" y="244" font-family="Arial, Apple Symbols, sans-serif" font-size="72" font-weight="800" fill="#f0f6fc" text-anchor="middle" letter-spacing="-1">bad-block-filler</text>
+
+  <!-- ─── Title line 2 (y=322) ─── -->
+  <text x="640" y="322" font-family="Arial, Apple Symbols, sans-serif" font-size="32" font-weight="400" fill="#6e7681" text-anchor="middle">Bad Block Neutraliser for macOS</text>
+
+  <!-- ─── Tagline (y=386) ─── -->
+  <text x="640" y="386" font-family="Arial, Apple Symbols, sans-serif" font-size="22" fill="#8b949e" text-anchor="middle">Detect bad blocks on old USB drives — no SMART required</text>
+
+  <!-- ─── Feature pills (y=452, group centred at x=640) ─── -->
+  <!-- Total width: 120 + 20 + 160 + 20 + 190 = 510; left x = 640-255 = 385 -->
+
+  <!-- Pill 1: APFS Native (w=120) -->
+  <rect x="385" y="432" width="120" height="36" rx="18" fill="#161b22" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="445" y="455" font-family="Arial, Apple Symbols, sans-serif" font-size="14" font-weight="600" fill="#3b82f6" text-anchor="middle">APFS Native</text>
+
+  <!-- Pill 2: No Dependencies (w=160) -->
+  <rect x="525" y="432" width="160" height="36" rx="18" fill="#161b22" stroke="#21262d" stroke-width="1.5"/>
+  <text x="605" y="455" font-family="Arial, Apple Symbols, sans-serif" font-size="14" font-weight="600" fill="#8b949e" text-anchor="middle">No Dependencies</text>
+
+  <!-- Pill 3: Free &amp; Open Source (w=190) -->
+  <rect x="705" y="432" width="190" height="36" rx="18" fill="#161b22" stroke="#21262d" stroke-width="1.5"/>
+  <text x="800" y="455" font-family="Arial, Apple Symbols, sans-serif" font-size="14" font-weight="600" fill="#8b949e" text-anchor="middle">Free &amp; Open Source</text>
+
+  <!-- ─── Repo URL (y=576) ─── -->
+  <text x="640" y="576" font-family="Arial, Apple Symbols, sans-serif" font-size="16" fill="#484f58" text-anchor="middle" letter-spacing="0.3">github.com/artur-bortsov/bad-block-filler</text>
+</svg>

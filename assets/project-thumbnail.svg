@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="100%" stop-color="#0a0f1a"/>
+    </linearGradient>
+    <linearGradient id="panelGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1f2e"/>
+      <stop offset="100%" stop-color="#161b22"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="500" fill="url(#bgGrad)"/>
+
+  <!-- ═══════════════════ LEFT PANEL ═══════════════════ -->
+
+  <!-- Category badge -->
+  <rect x="36" y="36" width="186" height="30" rx="15" fill="#f97316"/>
+  <text x="129" y="56" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" font-weight="700" fill="#fff" text-anchor="middle" letter-spacing="0.5">macOS · Drive Repair</text>
+
+  <!-- Title -->
+  <text x="36" y="130" font-family="Inter, Arial, Helvetica, sans-serif" font-size="52" font-weight="800" fill="#f0f6fc">bad-block-filler</text>
+
+  <!-- Accent underline -->
+  <rect x="36" y="142" width="312" height="4" rx="2" fill="#f97316"/>
+
+  <!-- Description -->
+  <text x="36" y="186" font-family="Inter, Arial, Helvetica, sans-serif" font-size="20" fill="#8b949e">Detect and neutralise bad blocks on old USB drives.</text>
+  <text x="36" y="212" font-family="Inter, Arial, Helvetica, sans-serif" font-size="20" fill="#8b949e">Rehabilitate degraded drives for safe continued use.</text>
+
+  <!-- Sub-description -->
+  <text x="36" y="254" font-family="Inter, Arial, Helvetica, sans-serif" font-size="15" fill="#484f58">No SMART required · Works through any USB bridge · macOS only</text>
+
+  <!-- Feature pills -->
+  <!-- Pill 1: APFS Native -->
+  <rect x="36" y="300" width="118" height="32" rx="16" fill="#161b22" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="95" y="321" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" font-weight="600" fill="#3b82f6" text-anchor="middle">APFS Native</text>
+
+  <!-- Pill 2: No Dependencies -->
+  <rect x="166" y="300" width="152" height="32" rx="16" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+  <text x="242" y="321" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" font-weight="600" fill="#8b949e" text-anchor="middle">No Dependencies</text>
+
+  <!-- Pill 3: Python 3 -->
+  <rect x="330" y="300" width="94" height="32" rx="16" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+  <text x="377" y="321" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" font-weight="600" fill="#8b949e" text-anchor="middle">Python 3</text>
+
+  <!-- Platform / licence row -->
+  <text x="36" y="440" font-family="Inter, Arial, Helvetica, sans-serif" font-size="14" fill="#30363d">Python 3  ·  macOS 10.12+  ·  MIT Licence  ·  Pure stdlib</text>
+
+  <!-- ═══════════════════ RIGHT PANEL ═══════════════════ -->
+  <!-- Panel: x=610, w=540, right=1150; cards left-gap=right-gap=36 -->
+  <rect x="610" y="36" width="540" height="428" rx="12" fill="url(#panelGrad)" stroke="#21262d" stroke-width="1"/>
+
+  <!-- Panel heading -->
+  <text x="880" y="84" font-family="Inter, Arial, Helvetica, sans-serif" font-size="20" font-weight="700" fill="#f0f6fc" text-anchor="middle">How it works</text>
+  <text x="880" y="106" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" fill="#484f58" text-anchor="middle">Scan writes · Binary-search zones · Lock with sparse files</text>
+
+  <!-- ─── Card 1: Scan (x=646) ─── -->
+  <rect x="646" y="134" width="132" height="128" rx="8" fill="#0d1117" stroke="#21262d" stroke-width="1"/>
+  <!-- top bar -->
+  <rect x="646" y="186" width="132" height="8" rx="0" fill="#3b82f6"/>
+  <!-- indicator dot (cy = bar_bottom + r = 194+10 = 204) -->
+  <circle cx="712" cy="204" r="10" fill="#3b82f6"/>
+  <!-- icon area: simple write-wave -->
+  <text x="712" y="165" font-family="Inter, Arial, Helvetica, sans-serif" font-size="22" fill="#3b82f6" text-anchor="middle">⏱</text>
+  <!-- card title -->
+  <text x="712" y="232" font-family="Inter, Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#f0f6fc" text-anchor="middle">Scan</text>
+  <text x="712" y="248" font-family="Inter, Arial, Helvetica, sans-serif" font-size="11" fill="#6e7681" text-anchor="middle">Timed writes</text>
+  <text x="712" y="261" font-family="Inter, Arial, Helvetica, sans-serif" font-size="11" fill="#6e7681" text-anchor="middle">detect slow blocks</text>
+
+  <!-- Arrow 1→2 -->
+  <text x="789" y="208" font-family="Arial, Apple Symbols, sans-serif" font-size="20" fill="#30363d" text-anchor="middle">→</text>
+
+  <!-- ─── Card 2: Map (x=814) ─── -->
+  <rect x="814" y="134" width="132" height="128" rx="8" fill="#0d1117" stroke="#21262d" stroke-width="1"/>
+  <rect x="814" y="186" width="132" height="8" rx="0" fill="#a78bfa"/>
+  <circle cx="880" cy="204" r="10" fill="#a78bfa"/>
+  <text x="880" y="165" font-family="Inter, Arial, Helvetica, sans-serif" font-size="22" fill="#a78bfa" text-anchor="middle">🔍</text>
+  <text x="880" y="232" font-family="Inter, Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#f0f6fc" text-anchor="middle">Map</text>
+  <text x="880" y="248" font-family="Inter, Arial, Helvetica, sans-serif" font-size="11" fill="#6e7681" text-anchor="middle">Binary search</text>
+  <text x="880" y="261" font-family="Inter, Arial, Helvetica, sans-serif" font-size="11" fill="#6e7681" text-anchor="middle">pinpoints boundaries</text>
+
+  <!-- Arrow 2→3 -->
+  <text x="957" y="208" font-family="Arial, Apple Symbols, sans-serif" font-size="20" fill="#30363d" text-anchor="middle">→</text>
+
+  <!-- ─── Card 3: Fill (x=982) ─── -->
+  <rect x="982" y="134" width="132" height="128" rx="8" fill="#0d1117" stroke="#21262d" stroke-width="1"/>
+  <rect x="982" y="186" width="132" height="8" rx="0" fill="#f97316"/>
+  <circle cx="1048" cy="204" r="10" fill="#f97316"/>
+  <text x="1048" y="165" font-family="Inter, Arial, Helvetica, sans-serif" font-size="22" fill="#f97316" text-anchor="middle">🔒</text>
+  <text x="1048" y="232" font-family="Inter, Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#f0f6fc" text-anchor="middle">Fill</text>
+  <text x="1048" y="248" font-family="Inter, Arial, Helvetica, sans-serif" font-size="11" fill="#6e7681" text-anchor="middle">Sparse files lock</text>
+  <text x="1048" y="261" font-family="Inter, Arial, Helvetica, sans-serif" font-size="11" fill="#6e7681" text-anchor="middle">bad regions</text>
+
+  <!-- Panel body text -->
+  <text x="880" y="310" font-family="Inter, Arial, Helvetica, sans-serif" font-size="14" fill="#6e7681" text-anchor="middle">Filler files physically occupy bad NAND — the OS</text>
+  <text x="880" y="328" font-family="Inter, Arial, Helvetica, sans-serif" font-size="14" fill="#6e7681" text-anchor="middle">cannot allocate user data to those regions again.</text>
+
+  <!-- Divider -->
+  <line x1="646" y1="356" x2="1114" y2="356" stroke="#21262d" stroke-width="1"/>
+
+  <!-- Panel info row -->
+  <text x="680" y="386" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" fill="#3b82f6">●</text>
+  <text x="696" y="386" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" fill="#484f58">APFS · HFS+ · ExFAT · NTFS</text>
+  <text x="680" y="410" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" fill="#f97316">●</text>
+  <text x="696" y="410" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" fill="#484f58">SSD · HDD · USB · Thunderbolt</text>
+  <text x="680" y="434" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" fill="#a78bfa">●</text>
+  <text x="696" y="434" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" fill="#484f58">Resumable · Parallel-safe · Pure stdlib</text>
+</svg>

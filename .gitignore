@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Runtime artefacts produced by the tool itself (never commit these)
+._bbf_scan_temp
+._bbf_lock
+._bbf_probe
+._bbf_api_test
+._bbf_api_clone
+.badblocks/
+
+# Virtual environments
+venv/
+.venv/
+env/
