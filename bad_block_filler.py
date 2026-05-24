@@ -494,10 +494,16 @@ def timed_write(fd: int, offset: int, size: int) -> float:
             remaining[0] -= 1
             if remaining[0] <= 0:
                 raise _WriteTimeoutError()
-            print(
-                f"\r   ⏳ drive not responding — aborting in {remaining[0]} s …   ",
-                end="", flush=True,
-            )
+            # Use os.write() directly — print() is not reentrant and raises
+            # RuntimeError if SIGALRM fires again while print() is still
+            # executing (which happens when the handler itself takes ~1 s).
+            try:
+                msg = (
+                    f"\r   ⏳ drive not responding — aborting in {remaining[0]} s …   "
+                ).encode()
+                os.write(1, msg)
+            except OSError:
+                pass
 
         old_handler = signal.signal(signal.SIGALRM, _on_alarm)
         signal.setitimer(signal.ITIMER_REAL, 1.0, 1.0)   # tick every 1 s
