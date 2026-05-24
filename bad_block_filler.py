@@ -312,7 +312,7 @@ _ZEROS          = bytearray(WRITE_CHUNK)   # reusable zero-filled buffer
 # dead.  On a failing drive F_FULLFSYNC can block indefinitely; SIGALRM fires
 # after this interval, interrupts the syscall with EINTR, and lets the scan
 # skip forward instead of hanging.  Updated from --write-timeout in main().
-WRITE_TIMEOUT   = 60.0
+WRITE_TIMEOUT   = 30.0
 
 PRINT_INTERVAL  = 1.0            # max seconds between progress-line updates
 
@@ -468,20 +468,33 @@ def timed_write(fd: int, offset: int, size: int) -> float:
     The timer starts BEFORE the writes so that any slow write path
     (e.g. NAND erase cycles) is captured, not just the fsync wait.
 
-    If the operation does not complete within WRITE_TIMEOUT seconds the
-    SIGALRM handler raises _WriteTimeoutError, which interrupts the blocking
-    F_FULLFSYNC syscall (via EINTR) and lets the scan continue.  Note:
-    Python only skips the EINTR retry in os.write() when the signal handler
-    itself raises an exception (PEP 475), so _WriteTimeoutError must be raised
-    — not just set a flag.
+    If WRITE_TIMEOUT > 0 a repeating 1-second SIGALRM is armed:
+    - Each tick decrements a counter and prints a live countdown so the
+      user can see the process is alive while the drive is unresponsive.
+    - The tick interrupts the blocking F_FULLFSYNC syscall with EINTR;
+      as long as the counter is > 0 the handler merely prints and returns,
+      and the syscall is retried.  When the counter reaches 0 the handler
+      raises _WriteTimeoutError, which unblocks the scan.
+    - os.write() is also interruptible: Python (PEP 475) retries it on
+      EINTR when the handler does not raise (countdown ticks), but lets
+      the exception propagate when the handler raises (final timeout).
     """
     t0 = time.monotonic()
 
     if WRITE_TIMEOUT > 0:
+        remaining = [int(WRITE_TIMEOUT)]
+
         def _on_alarm(signum, frame):
-            raise _WriteTimeoutError()
+            remaining[0] -= 1
+            if remaining[0] <= 0:
+                raise _WriteTimeoutError()
+            print(
+                f"\r   ⏳ drive not responding — aborting in {remaining[0]} s …   ",
+                end="", flush=True,
+            )
+
         old_handler = signal.signal(signal.SIGALRM, _on_alarm)
-        signal.setitimer(signal.ITIMER_REAL, WRITE_TIMEOUT)
+        signal.setitimer(signal.ITIMER_REAL, 1.0, 1.0)   # tick every 1 s
 
     try:
         written = 0
@@ -490,7 +503,19 @@ def timed_write(fd: int, offset: int, size: int) -> float:
             chunk = min(len(_ZEROS), size - written)
             n = os.write(fd, memoryview(_ZEROS)[:chunk])
             written += n
-        fullfsync(fd)
+
+        # F_FULLFSYNC with EINTR retry: countdown ticks interrupt the syscall
+        # (EINTR, handler returns without raising) → retry the sync.
+        # The final timeout tick raises _WriteTimeoutError → caught below.
+        while True:
+            ret = _c_fcntl(fd, F_FULLFSYNC, 0)
+            if ret >= 0:
+                break
+            if ctypes.get_errno() != errno.EINTR:
+                os.fsync(fd)   # non-EINTR failure: fall back to regular fsync
+                break
+            # EINTR from a countdown tick — retry
+
     except _WriteTimeoutError:
         return WRITE_TIMEOUT   # caller sees maximally-slow block → skip forward
     finally:
@@ -986,14 +1011,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--write-timeout",
         type=float,
-        default=60.0,
+        default=30.0,
         metavar="SECS",
         help=(
             "Seconds before a write+sync with no drive response is abandoned and "
             "treated as a dead block.  Prevents the tool from freezing indefinitely "
             "on a completely unresponsive block (the process would otherwise enter "
             "uninterruptible I/O wait and require a force-unmount to escape). "
-            "Default: %(default)s s.  Set to 0 to disable."
+            "Default: %(default)s s.  Set to 0 to disable.  "
+            "A healthy USB SSD block takes 5–100 ms; genuine bad blocks "
+            "cause drives to retry for up to ~30 s before giving up."
         ),
     )
     p.add_argument(
