@@ -140,11 +140,17 @@ python3 bad_block_filler.py /Volumes/MyDrive --api-check
 # 2. Full scan + create fillers
 python3 bad_block_filler.py /Volumes/MyDrive
 
-# 3. Scan only, no fillers (diagnostic, drive left unchanged)
+# 3. Resume an interrupted scan (run the same command again)
+python3 bad_block_filler.py /Volumes/MyDrive
+
+# 4. Scan only, no fillers (diagnostic, drive left unchanged)
 python3 bad_block_filler.py /Volumes/MyDrive --no-fillers
 
-# 4. Re-scan after defragmentation
+# 5. Re-scan after defragmentation
 python3 bad_block_filler.py /Volumes/MyDrive --force-remapping
+
+# 6. Remove all tool files from the volume (restore to original state)
+python3 bad_block_filler.py /Volumes/MyDrive --clean
 ```
 
 ### Typical scan times
@@ -156,13 +162,25 @@ python3 bad_block_filler.py /Volumes/MyDrive --force-remapping
 | USB SSD (degraded) | 200 GiB | 1–6 h |
 | HDD (external, 5400 rpm) | 500 GiB | 1–2 h |
 
-### Interrupt safety
+### Interrupt safety and resumption
 
-Ctrl-C leaves the scan file in place — it still claims the physical space.
-Delete it to free that space:
+Scans save progress automatically after each bad region is found (and every
+~1 GiB of scanning).  If the scan is interrupted — Ctrl-C, crash, or a
+deadlocked block that required a `diskutil unmount force` — just re-run the
+same command.  The tool detects the leftover scan file, reads the saved
+progress from it, and continues from where it left off:
+
+```
+  ↻  Resuming interrupted scan:
+     Scan file : 953.2 GiB
+     Scanned   : 145.76 GiB so far
+     Found     : 138 bad region(s)
+```
+
+To discard the interrupted scan and start fresh:
 
 ```sh
-rm -f /Volumes/MyDrive/._bbf_scan_temp
+sudo rm /Volumes/MyDrive/._bbf_scan_temp
 ```
 
 ---
@@ -178,6 +196,7 @@ rm -f /Volumes/MyDrive/._bbf_scan_temp
 | `--skip-gib GiB` | `1` | GiB to skip forward when a slow block is found |
 | `--headroom-mib MiB` | `512` | Free space to keep for macOS bookkeeping |
 | `--no-fillers` | off | Scan and report only; do not create filler files |
+| `--clean` | off | Remove all tool files from the volume and exit |
 | `--api-check` | off | Verify all macOS APIs on the volume and exit |
 
 ### Recommended threshold values
@@ -204,7 +223,7 @@ rm -f /Volumes/MyDrive/._bbf_scan_temp
   Threshold   : 1.000 s / 1 MiB  (<1 MiB/s = bad)
   Skip on slow: 1 GiB forward
 
-▶  Pre-allocating 128.5 GiB scan file … ✓  (128.5 GiB reserved)
+▶  Pre-allocating 128.5 GiB scan file … ✓  (128.5 GiB, lazy allocation)
 
 ▶  Scan  (128.5 GiB  |  1 MiB blocks  |  1 GiB skip on slow)
    Slow threshold: 1.000 s  (<1 MiB/s per block)
@@ -272,8 +291,8 @@ Key mitigations:
   — far above any normal seek overhead.
 - `F_PREALLOCATE` requests **contiguous allocation** automatically.
   If it succeeds, the scan file is one extent and fragmentation disappears.
-  The warning line `⚠ F_PREALLOCATE failed — blocks will be allocated lazily`
-  is the signal to be more conservative.
+  On APFS, `F_PREALLOCATE` always falls back to lazy allocation — this is
+  normal and handled silently; the scan proceeds correctly.
 
 Recommended HDD commands:
 
