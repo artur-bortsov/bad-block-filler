@@ -118,6 +118,13 @@ def load_existing_state(badblocks_dir: Path) -> Tuple[List["BadRegion"], int]:
     if map_path.exists():
         try:
             data = json.loads(map_path.read_text())
+            saved_ver = data.get("tool_version", "unknown")
+            if saved_ver != __version__:
+                print(
+                    f"  ℹ̈  Existing fillers were created by v{saved_ver}  "
+                    f"(current: v{__version__}).  "
+                    f"Regions and filler files will be reused as-is."
+                )
             for r in data.get("bad_regions", []):
                 existing.append(BadRegion(
                     start      = r["start_bytes"],
@@ -1491,6 +1498,7 @@ def main() -> None:
     all_regions = existing_regions + bad_regions
     badblocks_dir.mkdir(parents=True, exist_ok=True)
     map_data = {
+        "tool_version":       __version__,
         "volume":             str(volume),
         "last_scan_date":     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "last_scan_bytes":    target,
