@@ -357,9 +357,14 @@ def preallocate(fd: int, size: int) -> int:
     2. Non-contiguous, all-or-nothing (F_ALLOCATEALL): works on HFS+.
        Fails on APFS when the requested size reaches the container's allocatable limit
        (APFS reserves some of the space shown by statvfs for metadata / purgeable data).
-    3. Non-contiguous, best-effort (no flags): APFS-friendly; allocates as much as
-       possible and returns the actual bytes allocated in fst_bytesalloc.  May return
-       less than size on a nearly-full volume.
+
+    Deliberately does NOT attempt best-effort (flags=0) allocation on APFS.
+    Best-effort pre-allocation physically maps extents upfront.  On a drive
+    with bad sectors the mapped extents may cover damaged NAND; the very first
+    write then triggers an uninterruptible kernel I/O wait (U state) that
+    cannot be escaped by signals.  Lazy allocation (which happens when both
+    attempts above fail) lets APFS choose physical extents at write time,
+    typically avoiding already-known-bad regions.
 
     Uses Python's fcntl.fcntl(fd, cmd, bytes) which correctly passes the
     struct as a mutable buffer and returns the kernel-modified bytes.
@@ -372,7 +377,7 @@ def preallocate(fd: int, size: int) -> int:
 
     sz = ctypes.sizeof(Fstore)
 
-    for flags in (F_ALLOCATECONTIG | F_ALLOCATEALL, F_ALLOCATEALL, 0):
+    for flags in (F_ALLOCATECONTIG | F_ALLOCATEALL, F_ALLOCATEALL):
         fs.fst_flags      = flags
         fs.fst_bytesalloc = 0
         try:
@@ -380,8 +385,9 @@ def preallocate(fd: int, size: int) -> int:
             fs2 = Fstore.from_buffer_copy(result[:sz])
             return fs2.fst_bytesalloc
         except OSError:
-            if flags == 0:
-                raise   # all three attempts failed; propagate to caller
+            pass
+
+    raise OSError(errno.ENOSPC, "F_PREALLOCATE: all attempts failed", "preallocate")
 
 
 def punch_hole(fd: int, offset: int, length: int) -> None:
