@@ -283,6 +283,27 @@ _libc = ctypes.CDLL(None, use_errno=True)
 _libc.clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
 _libc.clonefile.restype  = ctypes.c_int
 
+# setxattr/getxattr — store scan progress as an xattr on the scan file so that
+# deleting the scan file also discards its progress (no separate progress file).
+_libc.setxattr.restype  = ctypes.c_int
+_libc.setxattr.argtypes = [
+    ctypes.c_char_p,   # path
+    ctypes.c_char_p,   # name
+    ctypes.c_void_p,   # value
+    ctypes.c_size_t,   # size
+    ctypes.c_uint32,   # position (always 0 on macOS)
+    ctypes.c_int,      # options  (0 = create-or-replace)
+]
+_libc.getxattr.restype  = ctypes.c_ssize_t
+_libc.getxattr.argtypes = [
+    ctypes.c_char_p,   # path
+    ctypes.c_char_p,   # name
+    ctypes.c_void_p,   # value (NULL → returns size)
+    ctypes.c_size_t,   # size
+    ctypes.c_uint32,   # position
+    ctypes.c_int,      # options
+]
+
 # NOTE: F_PREALLOCATE, F_PUNCHHOLE, F_LOG2PHYS_EXT all pass struct pointers
 # through a variadic fcntl().  ctypes.byref() fails with EFAULT on macOS
 # because the ABI doesn't convey pointer intent through variadic args.
@@ -318,7 +339,7 @@ PRINT_INTERVAL  = 1.0            # max seconds between progress-line updates
 
 BADBLOCKS_DIR          = ".badblocks"
 SCAN_TMP_NAME          = "._bbf_scan_temp"
-PROGRESS_FILE_NAME     = "._bbf_progress"    # written after each bad region + every N blocks
+PROGRESS_XATTR         = b"com.badblockfiller.progress"  # xattr on the scan file
 PROGRESS_SAVE_INTERVAL = 1024               # save every 1024 × write_block bytes (~1 GiB)
 
 # ─────────────────────────── data model ────────────────────────────────────
@@ -542,18 +563,19 @@ def timed_write(fd: int, offset: int, size: int) -> float:
 # ─────────────────────────── scan progress ───────────────────────────────
 
 def _save_scan_progress(
-    path:        Path,
+    scan_path:   Path,
     scan_size:   int,
     next_offset: int,
     bad_regions: List["BadRegion"],
 ) -> None:
     """
-    Atomically write intermediate scan state to PROGRESS_FILE_NAME so the scan
-    can be resumed after a crash or force-unmount without rescanning from zero.
+    Store intermediate scan state as an extended attribute on the scan file.
+    No separate progress file is created: the xattr lives and dies with the
+    scan file, so `rm ._bbf_scan_temp` is the only cleanup needed.
     Writes are best-effort: any error is silently ignored.
     """
     try:
-        data = {
+        data = json.dumps({
             "scan_size":   scan_size,
             "next_offset": next_offset,
             "bad_regions": [
@@ -564,10 +586,28 @@ def _save_scan_progress(
                 }
                 for r in bad_regions
             ],
-        }
-        path.write_text(json.dumps(data) + "\n")
-    except OSError:
+        }).encode()
+        _libc.setxattr(str(scan_path).encode(), PROGRESS_XATTR, data, len(data), 0, 0)
+    except Exception:
         pass
+
+
+def _load_scan_progress(scan_path: Path) -> Optional[dict]:
+    """
+    Read back the scan-progress xattr from the scan file.
+    Returns the parsed dict on success, None if absent or unreadable.
+    """
+    try:
+        size = _libc.getxattr(str(scan_path).encode(), PROGRESS_XATTR, None, 0, 0, 0)
+        if size <= 0:
+            return None
+        buf = ctypes.create_string_buffer(size)
+        ret = _libc.getxattr(str(scan_path).encode(), PROGRESS_XATTR, buf, size, 0, 0)
+        if ret < 0:
+            return None
+        return json.loads(bytes(buf.raw[:ret]).decode())
+    except Exception:
+        return None
 
 
 # ─────────────────────────── scanning ──────────────────────────────────
@@ -1177,10 +1217,9 @@ def main() -> None:
     existing_regions, next_filler_index = load_existing_state(badblocks_dir)
 
     # ── stale scan file: resume or discard ──────────────────────────────────────
-    # If a progress file exists alongside the scan file and the sizes match,
-    # the previous run was interrupted mid-scan and can be resumed in-place.
-    # Otherwise, delete the stale file so statvfs reports accurate free space.
-    progress_file   = volume / PROGRESS_FILE_NAME
+    # Progress is stored as an xattr on the scan file itself; there is no
+    # separate progress file.  If the xattr is present and consistent, resume;
+    # otherwise delete the stale file so statvfs reports accurate free space.
     resume          = False   # True  → reuse existing scan file, skip prealloc
     resume_offset   = 0
     resume_regions: List[BadRegion] = []
@@ -1191,29 +1230,27 @@ def main() -> None:
         stale_gib  = stale_size / GiB
         loaded_ok  = False
 
-        if progress_file.exists() and stale_size > 0:
-            try:
-                prog = json.loads(progress_file.read_text())
-                if (prog.get("scan_size", 0) == stale_size
-                        and prog.get("next_offset", 0) > 0):
-                    resume_offset = prog["next_offset"]
-                    for r in prog.get("bad_regions", []):
-                        resume_regions.append(BadRegion(
-                            start      = r["start_bytes"],
-                            end        = r["end_bytes"],
-                            phys_start = r.get("phys_start", -1),
-                        ))
-                    target    = stale_size
-                    resume    = True
-                    loaded_ok = True
-                    print(
-                        f"\n  ↻  Resuming interrupted scan:"
-                        f"\n     Scan file : {stale_gib:.1f} GiB"
-                        f"\n     Scanned   : {resume_offset / GiB:.2f} GiB so far"
-                        f"\n     Found     : {len(resume_regions)} bad region(s)"
-                    )
-            except Exception:
-                pass   # corrupt progress file — fall through to discard
+        if stale_size > 0:
+            prog = _load_scan_progress(scan_file)
+            if (prog is not None
+                    and prog.get("scan_size", 0) == stale_size
+                    and prog.get("next_offset", 0) > 0):
+                resume_offset = prog["next_offset"]
+                for r in prog.get("bad_regions", []):
+                    resume_regions.append(BadRegion(
+                        start      = r["start_bytes"],
+                        end        = r["end_bytes"],
+                        phys_start = r.get("phys_start", -1),
+                    ))
+                target    = stale_size
+                resume    = True
+                loaded_ok = True
+                print(
+                    f"\n  ↻  Resuming interrupted scan:"
+                    f"\n     Scan file : {stale_gib:.1f} GiB"
+                    f"\n     Scanned   : {resume_offset / GiB:.2f} GiB so far"
+                    f"\n     Found     : {len(resume_regions)} bad region(s)"
+                )
 
         if not loaded_ok:
             print(
@@ -1222,7 +1259,6 @@ def main() -> None:
                 f"\n     Deleting it to reclaim space before the new scan."
             )
             scan_file.unlink()
-            progress_file.unlink(missing_ok=True)
 
     # ── free space (fresh scan) ───────────────────────────────────────────────
     if not resume:
@@ -1322,14 +1358,14 @@ def main() -> None:
         os.ftruncate(fd, target)
         print(f"✓  ({alloc_label})")
 
-    # Ctrl-C handler: leave scan file and progress file in place for resumption.
+    # Ctrl-C handler: leave scan file in place (progress is in its xattr).
     def _sigint(_sig, _frame):
         try:
             os.close(fd)
         except Exception:
             pass
         print(f"\n\n  ⚠  Interrupted.  Scan state saved — re-run the same command to resume.")
-        print(f"  To discard: sudo rm {scan_file} {progress_file}")
+        print(f"  To discard: sudo rm '{scan_file}'")
         sys.exit(130)
 
     signal.signal(signal.SIGINT, _sigint)
@@ -1339,10 +1375,10 @@ def main() -> None:
         fd, target, args.slow_threshold, write_block, skip_size,
         start_offset    = resume_offset,
         initial_regions = resume_regions if resume else None,
-        progress_path   = progress_file,
+        progress_path   = scan_file,   # progress stored as xattr on the scan file itself
     )
     os.close(fd)
-    progress_file.unlink(missing_ok=True)   # scan completed — progress file no longer needed
+    # No separate progress file to delete — the xattr dies with the scan file.
 
     # ── display map ────────────────────────────────────────────────────────────
     show_map(target, bad_regions)
