@@ -316,7 +316,6 @@ Thunderbolt enclosure); USB Mass Storage bridges return −1 silently.
   suspect this has happened.
 
 - **ExFAT / NTFS.** Precise per-region fillers require sparse-file support.
-  See `FEATURE_rolling_split.md` for a planned filesystem-agnostic approach.
 
 - **macOS only.** The detection algorithm is portable, but the filler APIs
   (`clonefile`, `F_PUNCHHOLE`, `F_FULLFSYNC`, `F_PREALLOCATE`, `F_LOG2PHYS_EXT`)
@@ -339,4 +338,4 @@ python3 --version   # must be 3.9 or higher
 
 ## License
 
-This project is released under the [MIT License](LICENSE).
+This project is licensed under the [GNU General Public License v3.0](LICENSE).

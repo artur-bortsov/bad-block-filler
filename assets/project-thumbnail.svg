@@ -46,7 +46,7 @@
   <text x="377" y="321" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" font-weight="600" fill="#8b949e" text-anchor="middle">Python 3</text>
 
   <!-- Platform / licence row -->
-  <text x="36" y="440" font-family="Inter, Arial, Helvetica, sans-serif" font-size="14" fill="#30363d">Python 3  ·  macOS 10.12+  ·  MIT Licence  ·  Pure stdlib</text>
+  <text x="36" y="440" font-family="Inter, Arial, Helvetica, sans-serif" font-size="14" fill="#30363d">Python 3  ·  macOS 10.12+  ·  GPL v3  ·  Pure stdlib</text>
 
   <!-- ═══════════════════ RIGHT PANEL ═══════════════════ -->
   <!-- Panel: x=610, w=540, right=1150; cards left-gap=right-gap=36 -->
