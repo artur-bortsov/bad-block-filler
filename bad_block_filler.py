@@ -336,11 +336,11 @@ HEADROOM        = 512 * MiB      # keep free to avoid cramping macOS
 WRITE_CHUNK     = 1 * MiB        # pwrite() chunk size (= WRITE_BLOCK here)
 _ZEROS          = bytearray(WRITE_CHUNK)   # reusable zero-filled buffer
 
-# Maximum seconds to wait for a single write+sync before treating the block as
-# dead.  On a failing drive F_FULLFSYNC can block indefinitely; SIGALRM fires
-# after this interval, interrupts the syscall with EINTR, and lets the scan
-# skip forward instead of hanging.  Updated from --write-timeout in main().
-WRITE_TIMEOUT   = 30.0
+# Multiplier applied to --slow-threshold to set the per-write interrupt alarm.
+# Any block that takes longer than threshold is already bad; the alarm fires at
+# threshold × WRITE_TIMEOUT_FACTOR to give the drive a small grace margin before
+# interrupting the syscall and moving on.  Updated to the resolved value in main().
+WRITE_TIMEOUT   = 3.0   # seconds; overwritten in main() as slow_threshold × factor
 
 PRINT_INTERVAL  = 1.0            # max seconds between progress-line updates
 
@@ -504,39 +504,20 @@ def timed_write(fd: int, offset: int, size: int) -> float:
     The timer starts BEFORE the writes so that any slow write path
     (e.g. NAND erase cycles) is captured, not just the fsync wait.
 
-    If WRITE_TIMEOUT > 0 a repeating 1-second SIGALRM is armed:
-    - Each tick decrements a counter and prints a live countdown so the
-      user can see the process is alive while the drive is unresponsive.
-    - The tick interrupts the blocking F_FULLFSYNC syscall with EINTR;
-      as long as the counter is > 0 the handler merely prints and returns,
-      and the syscall is retried.  When the counter reaches 0 the handler
-      raises _WriteTimeoutError, which unblocks the scan.
-    - os.write() is also interruptible: Python (PEP 475) retries it on
-      EINTR when the handler does not raise (countdown ticks), but lets
-      the exception propagate when the handler raises (final timeout).
+    If WRITE_TIMEOUT > 0 a single-fire SIGALRM is armed at WRITE_TIMEOUT
+    seconds.  Any block slower than --slow-threshold is already a bad block;
+    there is no value in waiting longer.  WRITE_TIMEOUT is set by main() to
+    slow_threshold × 3 so the drive gets a small grace margin before the
+    syscall is interrupted with EINTR and the scan skips forward.
     """
     t0 = time.monotonic()
 
     if WRITE_TIMEOUT > 0:
-        remaining = [int(WRITE_TIMEOUT)]
-
         def _on_alarm(signum, frame):
-            remaining[0] -= 1
-            if remaining[0] <= 0:
-                raise _WriteTimeoutError()
-            # Use os.write() directly — print() is not reentrant and raises
-            # RuntimeError if SIGALRM fires again while print() is still
-            # executing (which happens when the handler itself takes ~1 s).
-            try:
-                msg = (
-                    f"\r   ⏳ drive not responding — aborting in {remaining[0]} s …   \n"
-                ).encode()
-                os.write(1, msg)
-            except OSError:
-                pass
+            raise _WriteTimeoutError()
 
         old_handler = signal.signal(signal.SIGALRM, _on_alarm)
-        signal.setitimer(signal.ITIMER_REAL, 1.0, 1.0)   # tick every 1 s
+        signal.setitimer(signal.ITIMER_REAL, WRITE_TIMEOUT)   # single fire
 
     try:
         written = 0
@@ -1166,21 +1147,6 @@ def parse_args() -> argparse.Namespace:
         help="MiB to keep free on the volume so macOS stays healthy. Default: %(default)s.",
     )
     p.add_argument(
-        "--write-timeout",
-        type=float,
-        default=30.0,
-        metavar="SECS",
-        help=(
-            "Seconds before a write+sync with no drive response is abandoned and "
-            "treated as a dead block.  Prevents the tool from freezing indefinitely "
-            "on a completely unresponsive block (the process would otherwise enter "
-            "uninterruptible I/O wait and require a force-unmount to escape). "
-            "Default: %(default)s s.  Set to 0 to disable.  "
-            "A healthy USB SSD block takes 5–100 ms; genuine bad blocks "
-            "cause drives to retry for up to ~30 s before giving up."
-        ),
-    )
-    p.add_argument(
         "--no-fillers",
         action="store_true",
         help="Scan and report only; do not create filler files.",
@@ -1238,11 +1204,14 @@ def main() -> None:
         write_block   = auto_block_mib * MiB
         block_mib_src = f"{auto_block_mib} MiB (auto: {drive_type})"
 
-    # Rebuild _ZEROS if the write block changed from the module default
+    # Rebuild _ZEROS if the write block changed from the module default.
+    # Set WRITE_TIMEOUT to slow_threshold × 3 (minimum 0.5 s) so that any
+    # block slower than the threshold is interrupted after a short grace period
+    # rather than waiting up to 30 s for nothing.
     global _ZEROS, WRITE_TIMEOUT
     if len(_ZEROS) != write_block:
         _ZEROS = bytearray(write_block)
-    WRITE_TIMEOUT = args.write_timeout
+    WRITE_TIMEOUT = max(args.slow_threshold * 3.0, 0.5)
 
     # ── acquire per-volume lock (prevents parallel runs) ─────────────────────
     # The lock fd must stay open until the process exits — closing it releases
