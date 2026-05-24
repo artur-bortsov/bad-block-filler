@@ -529,7 +529,7 @@ def timed_write(fd: int, offset: int, size: int) -> float:
             # executing (which happens when the handler itself takes ~1 s).
             try:
                 msg = (
-                    f"\r   ⏳ drive not responding — aborting in {remaining[0]} s …   "
+                    f"\r   ⏳ drive not responding — aborting in {remaining[0]} s …   \n"
                 ).encode()
                 os.write(1, msg)
             except OSError:
