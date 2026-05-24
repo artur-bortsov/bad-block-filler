@@ -1222,9 +1222,11 @@ def main() -> None:
                 f"{allocated / GiB:.1f} of {target / GiB:.1f} GiB pre-allocated; "
                 f"{lazy_gib:.1f} GiB lazy"
             )
-    except OSError as e:
-        print(f"\n  ⚠  F_PREALLOCATE failed ({e}) — blocks will be allocated lazily on write.")
-        alloc_label = f"{target / GiB:.1f} GiB target, lazy allocation"
+    except OSError:
+        # F_PREALLOCATE always fails on APFS for large allocations — this is
+        # expected and harmless.  The scan file will be a sparse file; APFS
+        # assigns physical extents lazily as each block is written.
+        alloc_label = f"{target / GiB:.1f} GiB, lazy allocation"
 
     os.ftruncate(fd, target)
     print(f"✓  ({alloc_label})")
