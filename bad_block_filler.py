@@ -610,6 +610,32 @@ def _load_scan_progress(scan_path: Path) -> Optional[dict]:
         return None
 
 
+def _preallocate_metadata_space(badblocks_dir: Path, size: int = MiB) -> None:
+    """
+    Create .badblocks/ and pre-write a placeholder for map.json BEFORE the
+    scan starts, using F_FULLFSYNC to confirm the sectors are physically good.
+
+    On APFS, when the real map.json is later written with O_TRUNC, the new
+    content lands in the same extents that were just verified — not in random
+    sectors that might turn out to be bad.  Best-effort: any I/O error here
+    just means we continue without the pre-allocation.
+    """
+    try:
+        badblocks_dir.mkdir(parents=True, exist_ok=True)
+        placeholder = badblocks_dir / "map.json"
+        if not placeholder.exists():
+            fd = os.open(str(placeholder), os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+            try:
+                # Write real data (not just ftruncate) to force physical block
+                # allocation and verify it with F_FULLFSYNC.
+                os.write(fd, b"\x00" * size)
+                _c_fcntl(fd, F_FULLFSYNC, 0)
+            finally:
+                os.close(fd)
+    except Exception:
+        pass
+
+
 def _unlink_scan_file(path: Path) -> None:
     """
     Delete the scan file and, if present, its AppleDouble companion.
@@ -1344,6 +1370,12 @@ def main() -> None:
             sys.exit(0)
         print()
 
+    # ── pre-allocate map.json at a verified-good location ────────────────────────
+    # Do this BEFORE the scan so the placeholder claims sectors that haven't
+    # been scanned yet (fresh allocation, almost certainly on good NAND).
+    # The final map.json write later will reuse the same physical extents.
+    _preallocate_metadata_space(badblocks_dir)
+
     # ── open / create the scan file ────────────────────────────────────────────
     if resume:
         print(f"\n▶  Reopening existing scan file ({target / GiB:.1f} GiB) for resumption … ", end="", flush=True)
@@ -1481,7 +1513,16 @@ def main() -> None:
         ],
     }
     map_path = badblocks_dir / "map.json"
-    map_path.write_text(json.dumps(map_data, indent=2) + "\n")
+    try:
+        # Open without truncate first to reuse pre-allocated extents, then
+        # overwrite.  Fall back to write_text if the file doesn't exist yet.
+        with open(map_path, "w") as _mf:
+            _mf.write(json.dumps(map_data, indent=2) + "\n")
+            _mf.flush()
+            _c_fcntl(_mf.fileno(), F_FULLFSYNC, 0)   # Confirm physical commit
+    except OSError as _e:
+        print(f"  ⚠  map.json write failed ({_e}) — bad block in metadata area?")
+        print(f"     Bad regions are in memory; re-run to create fillers again.")
 
     print(f"\n  Map written: {map_path}")
     total_new = sum(r.size for r in bad_regions)
